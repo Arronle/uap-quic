@@ -54,13 +54,13 @@ func main() {
 
 	// 配置 QUIC（启用数据报以支持 UDP 转发，并配置 Keep-Alive）
 	quicConfig := &quic.Config{
-		EnableDatagrams:  true,
-		MaxIdleTimeout:   time.Hour * 24 * 365, // 允许连接闲置 1 年
-		KeepAlivePeriod:  10 * time.Second,      // 每 10 秒发送一次心跳
+		EnableDatagrams: true,
+		MaxIdleTimeout:  time.Hour * 24 * 365, // 允许连接闲置 1 年
+		KeepAlivePeriod: 10 * time.Second,     // 每 10 秒发送一次心跳
 	}
 
 	// 监听地址
-	addr := "0.0.0.0:4433"
+	addr := "0.0.0.0:443"
 	listener, err := quic.ListenAddr(addr, tlsConfig, quicConfig)
 	if err != nil {
 		log.Fatalf("监听失败: %v", err)
@@ -476,9 +476,9 @@ func buildSOCKS5UDPHeader(sourceAddr *net.UDPAddr, payload []byte) []byte {
 		}
 	} else {
 		// 简化处理：硬编码 ATYP=0x01, IP=0.0.0.0, Port=0
-		socks5Header = append(socks5Header, 0x01) // ATYP (IPv4)
+		socks5Header = append(socks5Header, 0x01)                   // ATYP (IPv4)
 		socks5Header = append(socks5Header, 0x00, 0x00, 0x00, 0x00) // IP (0.0.0.0)
-		socks5Header = append(socks5Header, 0x00, 0x00) // Port (0)
+		socks5Header = append(socks5Header, 0x00, 0x00)             // Port (0)
 	}
 
 	// 拼接：Header + Data

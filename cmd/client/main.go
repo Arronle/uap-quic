@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ var (
 	quicConn     quic.Connection
 	quicConnLock sync.RWMutex
 	// ⚠️ 修正 1: 这里改为你的真实域名和 443 端口
-	serverAddr  = "104.194.81.96:443"
+	serverAddr  = "uaptest.org:443"
 	proxyRouter *router.Router
 )
 
@@ -109,9 +110,34 @@ func reconnectQuic() error {
 
 	// 配置 TLS
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false, // 开启安全验证
-		NextProtos:         []string{"h3"},
-		ServerName:         "uaptest.org", // 👈 关键！告诉 TLS 我要验证这个域名
+		// ⚠️ 必须改为 false，启用真证书验证
+		InsecureSkipVerify: false,
+		NextProtos:         []string{"h3"}, // h3 是国际标准的 HTTP/3 协议代号
+		ServerName:         "uaptest.org",  // 显式指定服务器名称，确保证书验证正确
+		// 自定义证书验证：接受服务端的自签名证书（仅当证书的 DNSNames 包含 uaptest.org 时）
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("未收到服务器证书")
+			}
+			// 解析第一个证书（服务器证书）
+			cert, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("解析证书失败: %v", err)
+			}
+			// 验证证书的 DNSNames 是否包含 uaptest.org
+			validDNS := false
+			for _, dns := range cert.DNSNames {
+				if dns == "uaptest.org" {
+					validDNS = true
+					break
+				}
+			}
+			if !validDNS {
+				return fmt.Errorf("证书 DNSNames 不包含 uaptest.org")
+			}
+			// 自签名证书验证通过（因为我们信任服务端的自签名证书）
+			return nil
+		},
 	}
 
 	// 配置 QUIC（启用数据报以支持 UDP 转发，并配置 Keep-Alive）

@@ -38,7 +38,7 @@ func GenerateSelfSignedCert() (tls.Certificate, error) {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
-		DNSNames:     []string{"localhost"},
+		DNSNames:     []string{"localhost", "uaptest.org"}, // 添加服务端域名
 	}
 
 	// 创建证书

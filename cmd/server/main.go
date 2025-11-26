@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -13,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"uap-quic/pkg/cert"
 
 	"github.com/quic-go/quic-go"
 )
@@ -40,11 +39,24 @@ func copyBuffer(dst io.Writer, src io.Reader) (int64, error) {
 }
 
 func main() {
-	// 生成自签名证书
-	tlsCert, err := cert.GenerateSelfSignedCert()
-	if err != nil {
-		log.Fatalf("生成证书失败: %v", err)
+	// 解析命令行参数
+	certFile := flag.String("cert", "", "TLS 证书文件路径（必需）")
+	keyFile := flag.String("key", "", "TLS 私钥文件路径（必需）")
+	flag.Parse()
+
+	// 强制检查证书和私钥参数
+	if *certFile == "" || *keyFile == "" {
+		log.Fatal("❌ 错误: 必须提供 -cert 和 -key 参数")
 	}
+
+	// 强制加载证书文件：如果加载失败，必须直接 log.Fatal 退出程序
+	tlsCert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
+	if err != nil {
+		log.Fatalf("❌ 加载 TLS 证书失败: %v (请检查文件路径和权限)", err)
+	}
+
+	// 成功加载证书后，打印日志
+	log.Printf("✅ 成功加载 TLS 证书: %s", *certFile)
 
 	// 配置 TLS（伪装成标准的 HTTP/3 流量）
 	tlsConfig := &tls.Config{

@@ -11,4 +11,5 @@ gstatic.com
 # 示例：其他需要代理的域名
 # example.com
 # blocked-site.com
+ipinfo.io
 

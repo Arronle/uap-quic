@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -24,127 +23,90 @@ const UAP_TOKEN = "uap-secret-token-8888"
 var (
 	quicConn     quic.Connection
 	quicConnLock sync.RWMutex
-	// ⚠️ 修正 1: 这里改为你的真实域名和 443 端口
+	// ⚠️ 核心配置：连接真实域名和标准 HTTPS 端口
 	serverAddr  = "uaptest.org:443"
 	proxyRouter *router.Router
 )
 
-// bufPool 全局缓冲池，用于复用传输缓冲区（32KB 是 iOS 网络传输的黄金尺寸）
+// bufPool 全局缓冲池 (32KB)
 var bufPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 32*1024)
 	},
 }
 
-// copyBuffer 使用缓冲池复用的数据传输函数
 func copyBuffer(dst io.Writer, src io.Reader) (int64, error) {
-	// 从池子里借一个 buffer
 	buf := bufPool.Get().([]byte)
-	// 用完必须还回去
 	defer bufPool.Put(buf)
-	// 使用官方的 CopyBuffer 接口
 	return io.CopyBuffer(dst, src, buf)
 }
 
 func main() {
-	// 初始化路由器并加载规则
+	// 1. 初始化路由
 	proxyRouter = router.NewRouter()
 	if err := proxyRouter.LoadRules("whitelist.txt"); err != nil {
-		log.Printf("⚠️ 加载规则文件失败: %v (将使用空规则列表)", err)
+		log.Printf("⚠️ 路由规则加载失败: %v (默认空规则)", err)
 	} else {
-		ruleCount := proxyRouter.GetRuleCount()
-		log.Printf("✅ 路由器已初始化，加载了 %d 条规则", ruleCount)
+		log.Printf("✅ 路由器加载成功，规则数: %d", proxyRouter.GetRuleCount())
 	}
 
-	// 初始化全局 QUIC 连接
+	// 2. 初始化 QUIC 连接
 	if err := ensureQuicConnection(); err != nil {
-		log.Printf("⚠️ 初始化 QUIC 连接失败 (将在后台重试): %v", err)
+		log.Printf("⚠️ 初始化连接失败 (后台重试): %v", err)
 	}
-
-	// 启动重连监控
 	go monitorConnection()
 
-	// SOCKS5 监听：在 127.0.0.1:1080 启动 TCP 监听
+	// 3. 启动 SOCKS5 监听
 	socksAddr := "127.0.0.1:1080"
 	listener, err := net.Listen("tcp", socksAddr)
 	if err != nil {
-		log.Fatalf("❌ 启动 SOCKS5 监听失败: %v", err)
+		log.Fatalf("❌ SOCKS5 启动失败: %v", err)
 	}
 	defer listener.Close()
 
-	log.Printf("🚀 SOCKS5 代理已启动，监听地址: %s", socksAddr)
-	log.Printf("🔗 QUIC 服务端目标: %s", serverAddr)
+	log.Printf("🚀 SOCKS5 代理已就绪: %s", socksAddr)
+	log.Printf("🔗 目标服务器: %s", serverAddr)
 
-	// 循环接受连接
 	for {
 		clientConn, err := listener.Accept()
 		if err != nil {
-			log.Printf("接受客户端连接失败: %v", err)
 			continue
 		}
-		// 为每个客户端连接启动一个 goroutine 处理
 		go handleSOCKS5Client(clientConn)
 	}
 }
 
-// ensureQuicConnection 确保全局 QUIC 连接存在
+// ensureQuicConnection 确保连接可用
 func ensureQuicConnection() error {
 	quicConnLock.Lock()
 	defer quicConnLock.Unlock()
 
 	if quicConn != nil {
-		// 检查连接是否存活
 		select {
 		case <-quicConn.Context().Done():
-			quicConn = nil // 已死
+			quicConn = nil
 		default:
-			return nil // 活着
+			return nil
 		}
 	}
 	return reconnectQuic()
 }
 
-// reconnectQuic 重新连接 QUIC 服务端
+// reconnectQuic 建立连接 (核心)
 func reconnectQuic() error {
-	log.Printf("正在连接到 QUIC 服务端: %s ...", serverAddr)
+	log.Printf("正在连接服务端: %s ...", serverAddr)
 
-	// 配置 TLS
 	tlsConfig := &tls.Config{
-		// ⚠️ 必须改为 false，启用真证书验证
-		InsecureSkipVerify: false,
-		NextProtos:         []string{"h3"}, // h3 是国际标准的 HTTP/3 协议代号
-		ServerName:         "uaptest.org",  // 显式指定服务器名称，确保证书验证正确
-		// 自定义证书验证：接受服务端的自签名证书（仅当证书的 DNSNames 包含 uaptest.org 时）
-		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
-				return fmt.Errorf("未收到服务器证书")
-			}
-			// 解析第一个证书（服务器证书）
-			cert, err := x509.ParseCertificate(rawCerts[0])
-			if err != nil {
-				return fmt.Errorf("解析证书失败: %v", err)
-			}
-			// 验证证书的 DNSNames 是否包含 uaptest.org
-			validDNS := false
-			for _, dns := range cert.DNSNames {
-				if dns == "uaptest.org" {
-					validDNS = true
-					break
-				}
-			}
-			if !validDNS {
-				return fmt.Errorf("证书 DNSNames 不包含 uaptest.org")
-			}
-			// 自签名证书验证通过（因为我们信任服务端的自签名证书）
-			return nil
-		},
+		InsecureSkipVerify: false,            // 🔒 开启真证书验证
+		NextProtos:         []string{"h3"},   // 伪装 HTTP/3
+		ServerName:         "uaptest.org",    // 显式指定域名
+		MinVersion:         tls.VersionTLS13, // 强制 TLS 1.3
 	}
 
-	// 配置 QUIC（启用数据报以支持 UDP 转发，并配置 Keep-Alive）
 	quicConfig := &quic.Config{
 		EnableDatagrams: true,
-		MaxIdleTimeout:  time.Hour * 24 * 365, // 允许连接闲置 1 年
-		KeepAlivePeriod: 10 * time.Second,     // 每 10 秒发送一次心跳
+		MaxIdleTimeout:  time.Hour * 24 * 365,
+		KeepAlivePeriod: 10 * time.Second,
 	}
 
 	conn, err := quic.DialAddr(context.Background(), serverAddr, tlsConfig, quicConfig)
@@ -153,40 +115,27 @@ func reconnectQuic() error {
 	}
 
 	quicConn = conn
-	log.Printf("✅ 已成功建立 QUIC 隧道")
+	log.Printf("✅ QUIC 隧道建立成功")
 	return nil
 }
 
-// getQuicConnection 获取全局 QUIC 连接
-func getQuicConnection() quic.Connection {
-	quicConnLock.RLock()
-	defer quicConnLock.RUnlock()
-	return quicConn
-}
-
-// monitorConnection 监控连接状态，断开时自动重连
+// monitorConnection 断线重连守护
 func monitorConnection() {
 	for {
 		time.Sleep(5 * time.Second)
 
 		needsReconnect := false
 		quicConnLock.RLock()
-		if quicConn == nil {
+		if quicConn == nil || quicConn.Context().Err() != nil {
 			needsReconnect = true
-		} else {
-			select {
-			case <-quicConn.Context().Done():
-				needsReconnect = true
-			default:
-			}
 		}
 		quicConnLock.RUnlock()
 
 		if needsReconnect {
 			quicConnLock.Lock()
-			// 双重检查
+			// 双重检查 (Double-Checked Locking)
 			if quicConn == nil || quicConn.Context().Err() != nil {
-				log.Println("🔄 QUIC 连接断开，尝试重连...")
+				log.Println("🔄 连接断开，正在重连...")
 				if err := reconnectQuic(); err != nil {
 					log.Printf("❌ 重连失败: %v", err)
 				}
@@ -196,286 +145,216 @@ func monitorConnection() {
 	}
 }
 
-// handleSOCKS5Client 处理 SOCKS5 客户端连接
+func getQuicConnection() quic.Connection {
+	quicConnLock.RLock()
+	defer quicConnLock.RUnlock()
+	return quicConn
+}
+
+// handleSOCKS5Client 处理 SOCKS5 握手
 func handleSOCKS5Client(clientConn net.Conn) {
 	defer clientConn.Close()
 
-	// 握手：处理 SOCKS5 认证
-	handshakeBuf := make([]byte, 2)
-	if _, err := io.ReadFull(clientConn, handshakeBuf); err != nil {
+	// 协商版本
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(clientConn, buf); err != nil {
+		return
+	}
+	if buf[0] != 0x05 {
 		return
 	}
 
-	if handshakeBuf[0] != 0x05 {
-		return
-	}
-
-	// 读取认证方法数量
-	methodCount := int(handshakeBuf[1])
-	methods := make([]byte, methodCount)
+	// 读取方法
+	numMethods := int(buf[1])
+	methods := make([]byte, numMethods)
 	if _, err := io.ReadFull(clientConn, methods); err != nil {
 		return
 	}
 
-	// 响应：0x05 0x00 (无需认证)
-	if _, err := clientConn.Write([]byte{0x05, 0x00}); err != nil {
+	// 回复无需认证
+	clientConn.Write([]byte{0x05, 0x00})
+
+	// 读取请求
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(clientConn, head); err != nil {
 		return
 	}
 
-	// 解析：读取请求包
-	requestBuf := make([]byte, 4)
-	if _, err := io.ReadFull(clientConn, requestBuf); err != nil {
-		return
-	}
-
-	if requestBuf[0] != 0x05 {
-		return
-	}
-
-	command := requestBuf[1]
-	addrType := requestBuf[3]
-
-	// 根据命令类型处理
-	switch command {
-	case 0x01: // CONNECT - TCP 连接
-		handleTCPConnect(clientConn, addrType)
-	case 0x03: // UDP ASSOCIATE - UDP 关联
-		handleUDPAssociate(clientConn, addrType)
+	switch head[1] {
+	case 0x01: // CONNECT
+		handleTCPConnect(clientConn, head[3])
+	case 0x03: // UDP ASSOCIATE
+		handleUDPAssociate(clientConn, head[3])
 	default:
-		clientConn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		clientConn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	}
 }
 
-// parseAddress 解析 SOCKS5 地址
-func parseAddress(clientConn net.Conn, addrType byte) (string, error) {
+// parseAddress 读取目标地址
+func parseAddress(conn net.Conn, addrType byte) (string, error) {
+	var host string
 	switch addrType {
 	case 0x01: // IPv4
-		ipBuf := make([]byte, 4)
-		if _, err := io.ReadFull(clientConn, ipBuf); err != nil {
+		ip := make([]byte, 4)
+		if _, err := io.ReadFull(conn, ip); err != nil {
 			return "", err
 		}
-		ip := net.IP(ipBuf)
-		var port uint16
-		if err := binary.Read(clientConn, binary.BigEndian, &port); err != nil {
-			return "", err
-		}
-		return net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port)), nil
-
+		host = net.IP(ip).String()
 	case 0x03: // Domain
-		domainLenBuf := make([]byte, 1)
-		if _, err := io.ReadFull(clientConn, domainLenBuf); err != nil {
+		lenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			return "", err
 		}
-		domainLen := int(domainLenBuf[0])
-		domainBuf := make([]byte, domainLen)
-		if _, err := io.ReadFull(clientConn, domainBuf); err != nil {
+		domain := make([]byte, int(lenBuf[0]))
+		if _, err := io.ReadFull(conn, domain); err != nil {
 			return "", err
 		}
-		domain := string(domainBuf)
-		var port uint16
-		if err := binary.Read(clientConn, binary.BigEndian, &port); err != nil {
-			return "", err
-		}
-		return net.JoinHostPort(domain, fmt.Sprintf("%d", port)), nil
-
+		host = string(domain)
 	case 0x04: // IPv6
-		ipBuf := make([]byte, 16)
-		if _, err := io.ReadFull(clientConn, ipBuf); err != nil {
+		ip := make([]byte, 16)
+		if _, err := io.ReadFull(conn, ip); err != nil {
 			return "", err
 		}
-		ip := net.IP(ipBuf)
-		var port uint16
-		if err := binary.Read(clientConn, binary.BigEndian, &port); err != nil {
-			return "", err
-		}
-		return net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port)), nil
-
+		host = net.IP(ip).String()
 	default:
-		return "", fmt.Errorf("不支持的地址类型: %d", addrType)
+		return "", fmt.Errorf("unknown address type")
 	}
+
+	portBuf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, portBuf); err != nil {
+		return "", err
+	}
+	port := binary.BigEndian.Uint16(portBuf)
+
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port)), nil
 }
 
-// handleTCPConnect 处理 TCP CONNECT 命令
+// handleTCPConnect 处理 TCP 转发
 func handleTCPConnect(clientConn net.Conn, addrType byte) {
-	targetAddress, err := parseAddress(clientConn, addrType)
+	targetAddr, err := parseAddress(clientConn, addrType)
 	if err != nil {
-		clientConn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 		return
 	}
 
-	hostname, _, err := net.SplitHostPort(targetAddress)
-	if err != nil {
-		hostname = targetAddress
-	}
+	host, _, _ := net.SplitHostPort(targetAddr)
 
-	// 分流逻辑
+	// 分流判断
 	shouldProxy := false
 	if proxyRouter != nil {
-		shouldProxy = proxyRouter.ShouldProxy(hostname)
+		shouldProxy = proxyRouter.ShouldProxy(host)
 	}
 
 	if shouldProxy {
-		log.Printf("[分流] 🚀 代理: %s", hostname)
-		handleProxyConnection(clientConn, targetAddress)
+		log.Printf("[分流] 🚀 代理: %s", host)
+		proxyTCP(clientConn, targetAddr)
 	} else {
-		log.Printf("[分流] 🏠 直连: %s", hostname)
-		handleDirectConnection(clientConn, targetAddress)
+		log.Printf("[分流] 🏠 直连: %s", host)
+		directTCP(clientConn, targetAddr)
 	}
 }
 
-// handleProxyConnection 处理代理连接
-func handleProxyConnection(clientConn net.Conn, targetAddress string) {
+// proxyTCP 走 QUIC 隧道
+func proxyTCP(clientConn net.Conn, target string) {
 	conn := getQuicConnection()
 	if conn == nil {
-		quicConnLock.Lock()
-		if err := reconnectQuic(); err != nil {
-			log.Printf("❌ 重连失败: %v", err)
-			clientConn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
-			quicConnLock.Unlock()
-			return
-		}
-		conn = quicConn
-		quicConnLock.Unlock()
+		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
 	}
 
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("❌ 打开流失败: %v", err)
-		clientConn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
 	defer stream.Close()
 
-	// 1. 发送 Token
-	tokenWithNewline := UAP_TOKEN + "\n"
-	if _, err := stream.Write([]byte(tokenWithNewline)); err != nil {
+	// 1. 鉴权
+	if _, err := stream.Write([]byte(UAP_TOKEN + "\n")); err != nil {
 		return
 	}
 
-	// 2. 验证 Token
-	statusBuf := make([]byte, 1)
-	if _, err := io.ReadFull(stream, statusBuf); err != nil {
-		return
-	}
-	if statusBuf[0] != 0x00 {
-		log.Printf("⛔ Token 鉴权失败")
+	// 2. 验证
+	status := make([]byte, 1)
+	if _, err := io.ReadFull(stream, status); err != nil || status[0] != 0x00 {
+		log.Printf("⛔ 鉴权被拒")
 		return
 	}
 
-	// 3. 发送目标地址
-	addressBytes := []byte(targetAddress)
-	if len(addressBytes) > 255 {
-		return
-	}
-	stream.Write([]byte{byte(len(addressBytes))})
-	stream.Write(addressBytes)
+	// 3. 发送目标
+	addrBytes := []byte(target)
+	stream.Write([]byte{byte(len(addrBytes))})
+	stream.Write(addrBytes)
 
-	// 4. 等待连接确认
-	if _, err := io.ReadFull(stream, statusBuf); err != nil {
-		return
-	}
-	if statusBuf[0] != 0x00 {
-		// 服务端连不上目标
-		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	// 4. 等待连接
+	if _, err := io.ReadFull(stream, status); err != nil || status[0] != 0x00 {
+		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
 
-	// 5. 响应浏览器成功
-	clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	// 5. 成功
+	clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
-	// 6. 双向转发
-	errChan := make(chan error, 2)
-	go func() {
-		_, err := copyBuffer(stream, clientConn)
-		errChan <- err
-	}()
-	go func() {
-		_, err := copyBuffer(clientConn, stream)
-		errChan <- err
-	}()
-	<-errChan
+	// 6. 转发
+	go func() { copyBuffer(stream, clientConn) }()
+	copyBuffer(clientConn, stream)
 }
 
-// handleDirectConnection 处理直连
-func handleDirectConnection(clientConn net.Conn, targetAddress string) {
-	targetConn, err := net.Dial("tcp", targetAddress)
+// directTCP 直连
+func directTCP(clientConn net.Conn, target string) {
+	targetConn, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
-		log.Printf("直连失败 %s: %v", targetAddress, err)
-		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		clientConn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
 	defer targetConn.Close()
 
-	clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
-	errChan := make(chan error, 2)
-	go func() {
-		_, err := copyBuffer(targetConn, clientConn)
-		errChan <- err
-	}()
-	go func() {
-		_, err := copyBuffer(clientConn, targetConn)
-		errChan <- err
-	}()
-	<-errChan
+	go func() { copyBuffer(targetConn, clientConn) }()
+	copyBuffer(clientConn, targetConn)
 }
 
-// handleUDPAssociate 处理 UDP 关联
+// handleUDPAssociate 处理 UDP 转发
 func handleUDPAssociate(clientConn net.Conn, addrType byte) {
-	parseAddress(clientConn, addrType) // 消耗掉请求中的无用地址
+	parseAddress(clientConn, addrType) // 读掉头部
 
-	// 开启本地 UDP 监听
-	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	// 启动本地 UDP
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
-		return
-	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		log.Printf("UDP 监听失败: %v", err)
 		return
 	}
 	defer udpConn.Close()
 
-	localUDPAddr := udpConn.LocalAddr().(*net.UDPAddr)
-	log.Printf("[UDP] 开启加速通道 端口: %d", localUDPAddr.Port)
+	localPort := udpConn.LocalAddr().(*net.UDPAddr).Port
+	log.Printf("[UDP] 端口开启: %d", localPort)
 
-	// 回复 TCP 告知端口
-	response := make([]byte, 10)
-	response[0], response[1], response[3] = 0x05, 0x00, 0x01
-	response[4], response[5], response[6], response[7] = 127, 0, 0, 1
-	binary.BigEndian.PutUint16(response[8:10], uint16(localUDPAddr.Port))
-	if _, err := clientConn.Write(response); err != nil {
-		return
-	}
+	// 回复 TCP
+	resp := []byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0}
+	binary.BigEndian.PutUint16(resp[8:], uint16(localPort))
+	clientConn.Write(resp)
 
 	conn := getQuicConnection()
 	if conn == nil {
 		return
 	}
 
-	var currentClientAddr atomic.Value
-	// 使用 Context 管理生命周期，当 TCP 断开时，通知所有 UDP 协程退出
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	var currentAddr atomic.Value
 
-	// 1. Read Loop (本地 UDP -> QUIC)
-	// ⚠️ 修正 3: 移除了这里面冗余的 TCP 检查代码，让它专心读 UDP
+	// 1. Read Loop (App -> LocalUDP -> QUIC)
 	go func() {
-		defer wg.Done()
 		buf := make([]byte, 2048)
 		for {
-			// 如果 Context 已取消（TCP 断了），退出循环
 			if ctx.Err() != nil {
 				return
 			}
+			udpConn.SetReadDeadline(time.Now().Add(5 * time.Second)) // 超时机制
 
-			udpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			n, clientAddr, err := udpConn.ReadFromUDP(buf)
+			n, addr, err := udpConn.ReadFromUDP(buf)
 			if err != nil {
-				// 仅处理超时，忽略其他错误
+				// 超时继续，错误退出
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue
 				}
@@ -483,47 +362,32 @@ func handleUDPAssociate(clientConn net.Conn, addrType byte) {
 			}
 
 			if n > 0 {
-				currentClientAddr.Store(clientAddr)
-				if err := conn.SendDatagram(buf[:n]); err != nil {
-					// 发送失败可能是临时拥塞，不退出
+				currentAddr.Store(addr)
+				conn.SendDatagram(buf[:n])
+			}
+		}
+	}()
+
+	// 2. Write Loop (QUIC -> LocalUDP -> App)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				data, err := conn.ReceiveDatagram(ctx)
+				if err != nil {
+					return
+				}
+
+				if addr := currentAddr.Load(); addr != nil {
+					udpConn.WriteToUDP(data, addr.(*net.UDPAddr))
 				}
 			}
 		}
 	}()
 
-	// 2. Write Loop (QUIC -> 本地 UDP)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-ctx.Done(): // 收到退出信号
-				return
-			default:
-				// 继续
-			}
-
-			// 使用 Context 控制接收超时/取消
-			data, err := conn.ReceiveDatagram(ctx)
-			if err != nil {
-				return
-			}
-
-			addrVal := currentClientAddr.Load()
-			if addrVal != nil {
-				clientAddr := addrVal.(*net.UDPAddr)
-				udpConn.WriteToUDP(data, clientAddr)
-			}
-		}
-	}()
-
-	// 3. TCP 监控协程 (这才是正确的保活方式)
-	// 只要 TCP 连接断开 (Read 返回 EOF)，就取消 Context，强制结束上面的循环
-	go func() {
-		io.Copy(io.Discard, clientConn)
-		cancel()        // 通知大家下班
-		udpConn.Close() // 强制中断 UDP Read
-	}()
-
-	wg.Wait()
-	log.Printf("[UDP] 会话结束")
+	// 3. TCP 保活监控
+	io.Copy(io.Discard, clientConn) // 阻塞等待 TCP 断开
+	cancel()
 }

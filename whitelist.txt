@@ -1,0 +1,14 @@
+# UAP QUIC Tunnel 白名单规则文件
+# 每行一个域名，支持注释（以 # 开头）
+# 匹配规则：如果域名在白名单中，则走 QUIC 隧道代理
+# 否则直连
+
+# 示例：Google 服务
+google.com
+googleapis.com
+gstatic.com
+
+# 示例：其他需要代理的域名
+# example.com
+# blocked-site.com
+

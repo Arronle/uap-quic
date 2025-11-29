@@ -7,7 +7,7 @@ echo "🧪 测试钱包登录接口"
 echo ""
 
 # 服务端地址
-API_URL="http://localhost:8080/api/v1/auth/wallet"
+API_URL="https://admin.uap.io/api/v1/auth/wallet"
 
 # 生成测试密钥对（使用 Go 脚本）
 cat > /tmp/gen_key.go << 'EOF'

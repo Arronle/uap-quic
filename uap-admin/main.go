@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/pem"
+	"flag"
 	"log"
 	"os"
 
@@ -11,7 +12,7 @@ import (
 	"uap-admin/pkg/response"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -65,18 +66,49 @@ func main() {
 			// 获取节点列表（需要 JWT 鉴权）
 			clientGroup.GET("/nodes", api.AuthMiddleware(), api.GetNodeList(db))
 		}
+
+		systemGroup := apiV1.Group("/system")
+		{
+			// 获取系统公钥（公开接口，无需鉴权）
+			systemGroup.GET("/public-key", api.GetPublicKey())
+		}
 	}
 
 	// 管理员接口：节点注册（简单的管理员密钥鉴权）
 	r.POST("/api/v1/admin/node/register", api.HandleNodeRegister(db, ADMIN_SECRET))
+	// 管理员接口：节点删除（简单的管理员密钥鉴权）
+	r.DELETE("/api/v1/admin/node", api.HandleDeleteNode(db, ADMIN_SECRET))
+
+	// 解析命令行参数
+	var certFile string
+	var keyFile string
+	flag.StringVar(&certFile, "cert", "", "TLS 证书文件路径 (启用 HTTPS)")
+	flag.StringVar(&keyFile, "key", "", "TLS 私钥文件路径 (启用 HTTPS)")
+	flag.Parse()
 
 	// 打印启动日志
 	log.Println("[UAP-Admin] 服务启动成功，密钥对已就绪")
 
 	// 启动服务器
-	log.Println("[UAP-Admin] 服务监听在 :8080")
-	if err := r.Run(":8080"); err != nil {
-		log.Fatalf("服务启动失败: %v", err)
+	if certFile != "" && keyFile != "" {
+		// HTTPS 模式：验证证书文件是否存在
+		if _, err := os.Stat(certFile); os.IsNotExist(err) {
+			log.Fatalf("❌ 证书文件不存在: %s", certFile)
+		}
+		if _, err := os.Stat(keyFile); os.IsNotExist(err) {
+			log.Fatalf("❌ 私钥文件不存在: %s", keyFile)
+		}
+
+		log.Println("🚀 UAP Admin HTTPS 服务启动在 :443")
+		if err := r.RunTLS(":443", certFile, keyFile); err != nil {
+			log.Fatalf("服务启动失败: %v", err)
+		}
+	} else {
+		// HTTP 模式（开发模式）
+		log.Println("[UAP-Admin] 服务监听在 :8080")
+		if err := r.Run(":8080"); err != nil {
+			log.Fatalf("服务启动失败: %v", err)
+		}
 	}
 }
 

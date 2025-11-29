@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -85,8 +86,9 @@ func HandleWalletLogin(db *gorm.DB) gin.HandlerFunc {
 
 		err = db.Where("wallet_pub_key = ?", publicKeyHex).First(&user).Error
 		if err != nil {
-			if err == gorm.ErrRecordNotFound {
-				// 用户不存在，自动注册
+			// 判断错误类型
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// 新用户注册：生成 UUID 并创建用户
 				newUUID := uuid.New().String()
 				user = models.User{
 					UUID:          newUUID,
@@ -102,13 +104,16 @@ func HandleWalletLogin(db *gorm.DB) gin.HandlerFunc {
 					return
 				}
 
-				log.Printf("✅ 新用户注册: UUID=%s, PublicKey=%s", newUUID, publicKeyHex)
+				// 使用友好的日志信息，避免 "record not found" 噪音
+				log.Printf("[INFO] 新用户注册: pubkey=%s, uuid=%s", publicKeyHex, newUUID)
 			} else {
+				// 其他数据库错误（如连接断开等），返回 500
 				log.Printf("❌ 数据库查询错误: %v", err)
 				c.JSON(500, response.Error(500, "数据库错误"))
 				return
 			}
 		} else {
+			// 用户已存在，正常登录
 			log.Printf("✅ 用户登录: UUID=%s, PublicKey=%s", user.UUID, publicKeyHex)
 		}
 

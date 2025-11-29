@@ -80,3 +80,48 @@ func HandleNodeRegister(db *gorm.DB, adminSecret string) gin.HandlerFunc {
 	}
 }
 
+// NodeDeleteRequest 节点删除请求
+type NodeDeleteRequest struct {
+	Address string `json:"address" binding:"required"` // e.g. "1.1.1.1:443"
+}
+
+// HandleDeleteNode 处理节点删除（管理员接口）
+func HandleDeleteNode(db *gorm.DB, adminSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 管理员鉴权：检查 X-Admin-Secret
+		secret := c.GetHeader("X-Admin-Secret")
+		if strings.TrimSpace(secret) != adminSecret {
+			log.Printf("❌ 管理员密钥错误，拒绝节点删除请求")
+			c.JSON(403, response.Error(403, "forbidden"))
+			return
+		}
+
+		// 解析请求体
+		var req NodeDeleteRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, response.Error(400, "参数错误"))
+			return
+		}
+
+		// 查找并删除节点（通过地址）
+		result := db.Where("address = ?", req.Address).Delete(&models.Node{})
+		if result.Error != nil {
+			log.Printf("❌ 节点删除失败: %v", result.Error)
+			c.JSON(500, response.Error(500, "节点删除失败"))
+			return
+		}
+
+		// 检查是否找到并删除了节点
+		if result.RowsAffected == 0 {
+			log.Printf("⚠️  未找到地址为 %s 的节点", req.Address)
+			c.JSON(404, response.Error(404, "节点不存在"))
+			return
+		}
+
+		log.Printf("✅ 节点删除成功: Address=%s", req.Address)
+		c.JSON(200, response.Success(map[string]string{
+			"msg": "Node deleted",
+		}))
+	}
+}
+

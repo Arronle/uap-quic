@@ -1,0 +1,42 @@
+# === Google 全家桶 ===
+google.com
+googleapis.com
+gstatic.com
+googleusercontent.com
+googlevideo.com
+ytimg.com
+youtube.com
+ggpht.com
+android.com
+gvt1.com
+gvt2.com
+gvt3.com
+# === Gemini / AI 专用 ===
+bard.google.com
+deepmind.com
+generativeai.google
+ai.google.dev
+
+# === Pornhub 及其 CDN (必须加这些才能看视频) ===
+pornhub.com
+phncdn.com
+phprcdn.com
+phncdn.com
+mncdn.com
+
+# === Pornhub 视频与资源 CDN (必须加) ===
+phncdn.com
+phprcdn.com
+imagebam.com
+trafficjunky.net
+trafficjunky.com
+
+# === 其他常见被墙域名 ===
+twitter.com
+t.co
+twimg.com
+facebook.com
+instagram.com
+cdninstagram.com
+github.com
+githubusercontent.com

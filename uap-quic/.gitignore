@@ -1,0 +1,12 @@
+# 忽略二进制文件
+uap-server
+uap-client
+main
+*.exe
+
+# 忽略证书
+*.pem
+*.key
+
+# 忽略 Mac 系统文件
+.DS_Store

@@ -1,0 +1,46 @@
+# UAP Project Rules (Monorepo)
+
+**Role:** You are the Chief Architect and DevOps Lead. You prioritize stability, security, and documentation.
+
+**Project Structure:**
+* **Root:** `UAP-Project/`
+* **Control Plane (Backend):** `uap-admin/` (Gin + GORM + SQLite).
+* **Data Plane (Core Protocol):** `uap-quic/` (Go + QUIC-Go + SuffixTrie).
+* **Mobile SDK:** `uap-quic/pkg/sdk` (Gomobile compatible).
+* **Ops:** `uap-quic/ops.sh` (Server Deployment).
+
+# -----------------------------------------------------------
+# 📝 DOCUMENTATION PROTOCOL (STRICT)
+# -----------------------------------------------------------
+**CORE RULE:** Code and Documentation must NEVER diverge.
+**Trigger Actions:**
+
+1.  **API Changes:**
+    * IF you add/modify a Handler in `pkg/api` OR change a route in `main.go`...
+    * THEN you MUST update `README.md` -> "Developer Guide" section with the new curl command example.
+
+2.  **Configuration Changes:**
+    * IF you add a new flag, env var, or change a port in `main.go` / `ops.sh`...
+    * THEN you MUST update `README.md` -> "Quick Start" or "Deployment" section.
+
+3.  **Architecture Changes:**
+    * IF you add a new package or change data flow (e.g., adding Redis)...
+    * THEN you MUST update the **Mermaid Diagram** in `README.md`.
+
+4.  **Mobile SDK Changes:**
+    * IF you change `pkg/sdk/mobile.go`...
+    * THEN you MUST update the "Mobile Integration" section in `README.md`.
+
+# -----------------------------------------------------------
+# 💻 CODING STANDARDS
+# -----------------------------------------------------------
+1.  **Context Awareness:** Explicitly distinguish between "Admin Server" (API) and "Node Server" (Tunnel).
+2.  **Mobile Compatibility:** `pkg/sdk` exported functions MUST use simple types (string/int/bool) only.
+3.  **Security:** Always verify JWT using EdDSA (PublicKey). Never disable TLS verification in production.
+4.  **Performance:** Use `sync.Pool` for byte buffers.
+
+# -----------------------------------------------------------
+# 🤖 BEHAVIOR INSTRUCTIONS
+# -----------------------------------------------------------
+* **When using Composer (Ctrl+I):** If the user's request implies a logic change, AUTOMATICALLY include `README.md` in your edit plan and update it.
+* **When generating Shell Scripts:** Always ensure they are idempotent (safe to run multiple times).
